@@ -1,0 +1,6 @@
+temporalio
+python-pptx
+openai
+openpyxl
+pandas
+streamlit>=1.31.0
