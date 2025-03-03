@@ -1,10 +1,11 @@
 import _io
 import json
-from typing import Union, List, Dict, Any
+from typing import Union, List, Dict, Any, Optional
 from temporalio import workflow
 from datetime import timedelta
 import asyncio
 import os
+from dataclasses import dataclass
 
 from activities import (
     LLMParams,
@@ -112,120 +113,63 @@ def define_tools():
         }
     ]
 
+@dataclass
+class UserInput:
+    query: str
+    pptx_files: List[str]
+    excel_files: List[str]
+
 @workflow.defn
 class PPTAgentWorkflow:
     def __init__(self):
-        self.messages = []
-        self.pptx_files = []
-        self.excel_files = []
+        self.messages: List[Dict[str, Any]] = []
+        self.pptx_files: List[str] = []
+        self.excel_files: List[str] = []
         self.file_path_mapping = {}
-        self.memory = {}
+        self.memory: Dict[str, Any] = {}
         self.tools = define_tools()
         self.user_input_received = False
         self.user_query = ""
 
     @workflow.run
     async def run(self) -> List[Dict[str, Any]]:
-        """Main workflow that orchestrates the agent."""
-        # Initialize with system message
-        self.messages = [
-            {
-                "role": "system",
-                "content": "You are an AI PowerPoint and Excel agent. You can view and modify PowerPoint slides and Excel sheets."
-            }
-        ]
+        """Main workflow execution."""
+        self.messages = [{
+            "role": "system",
+            "content": "You are an AI PowerPoint and Excel agent. You can view and modify PowerPoint slides and Excel sheets."
+        }]
+        return self.messages
 
-        while True:
-            # Wait for user input
-            await workflow.wait_condition(lambda: bool(self.user_input_received))
-            self.user_input_received = False
+    @workflow.query
+    def get_conversation_history(self) -> List[Dict[str, Any]]:
+        """Query method to get conversation history."""
+        return self.messages
 
-            # Update memory snapshot
-            memory_params = MemorySnapshotParams(
-                pptx_files=self.pptx_files,
-                excel_files=self.excel_files
-            )
-            self.memory = await workflow.execute_activity(
-                create_memory_snapshot,
-                args=[memory_params],
-                start_to_close_timeout=timedelta(seconds=30)
-            )
-
-            # Update system message with memory
-            memory_str = json.dumps(self.memory, indent=2)
-            file_mapping_str = json.dumps(self.file_path_mapping, indent=2)
-            
-            self.messages[0]["content"] = f"""You are an AI PowerPoint and Excel agent. You can view and modify PowerPoint slides and Excel sheets.
-
-Available files:
-{memory_str}
-
-File paths:
-{file_mapping_str}
-
-You have access to tools to:
-1. View slide content (get_slide)
-2. View Excel data (get_excel_data)
-3. Modify slides (modify_slide)
-4. Modify Excel sheets (modify_excel)
-
-Always examine file content before making modifications."""
-
-            # Add user query to messages
-            self.messages.append({
-                "role": "user",
-                "content": self.user_query
-            })
-
-            # Process message chain until LLM stops calling tools
-            while True:
-                # Call LLM
-                llm_params = LLMParams(
-                    messages=self.messages,
-                    tools=self.tools
-                )
-                
-                assistant_message = await workflow.execute_activity(
-                    call_llm,
-                    args=[llm_params],
-                    start_to_close_timeout=timedelta(minutes=2)
-                )
-
-                # Add assistant message to conversation
-                self.messages.append({
-                    "role": "assistant",
-                    "content": assistant_message["content"],
-                    "tool_calls": assistant_message["tool_calls"]
-                })
-
-                # Check if tools need to be called
-                if assistant_message["tool_calls"]:
-                    for tool_call in assistant_message["tool_calls"]:
-                        tool_params = ToolExecutionParams(
-                            tool_name=tool_call["function"]["name"],
-                            tool_args=json.loads(tool_call["function"]["arguments"])
-                        )
-
-                        # Execute tool
-                        tool_response = await workflow.execute_activity(
-                            execute_tool,
-                            args=[tool_params],
-                            start_to_close_timeout=timedelta(minutes=1)
-                        )
-
-                        # Add tool response to messages
-                        self.messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call["id"],
-                            "name": tool_call["function"]["name"],
-                            "content": str(tool_response)
-                        })
-
-                    # Continue to let LLM process tool responses
-                    continue
-
-                # If no tools were called, break and wait for next user input
-                break
+    @workflow.signal
+    async def user_input(self, data: UserInput):
+        """Signal method to receive user input."""
+        self.pptx_files = data.pptx_files
+        self.excel_files = data.excel_files
+        
+        # Add user message to conversation
+        self.messages.append({
+            "role": "user",
+            "content": data.query
+        })
+        
+        # Process the query and generate response
+        # Add assistant response to messages
+        response = await workflow.execute_activity(
+            "call_llm",
+            args=[{
+                "messages": self.messages,
+                "pptx_files": self.pptx_files,
+                "excel_files": self.excel_files
+            }],
+            start_to_close_timeout=timedelta(minutes=5)
+        )
+        
+        self.messages.append(response)
 
     @workflow.signal
     async def user_input(self, input_data: Dict[str, Any]):
