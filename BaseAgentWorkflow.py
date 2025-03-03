@@ -113,6 +113,11 @@ def define_tools():
         }
     ]
 
+from temporalio import workflow
+from dataclasses import dataclass
+from typing import List, Dict, Any
+from datetime import timedelta
+
 @dataclass
 class UserInput:
     query: str
@@ -121,23 +126,19 @@ class UserInput:
 
 @workflow.defn
 class PPTAgentWorkflow:
-    def __init__(self):
-        self.messages: List[Dict[str, Any]] = []
-        self.pptx_files: List[str] = []
-        self.excel_files: List[str] = []
-        self.file_path_mapping = {}
-        self.memory: Dict[str, Any] = {}
-        self.tools = define_tools()
-        self.user_input_received = False
-        self.user_query = ""
-
     @workflow.run
     async def run(self) -> List[Dict[str, Any]]:
         """Main workflow execution."""
-        self.messages = [{
+        # Initialize state in run method instead of __init__
+        self.messages: List[Dict[str, Any]] = [{
             "role": "system",
             "content": "You are an AI PowerPoint and Excel agent. You can view and modify PowerPoint slides and Excel sheets."
         }]
+        self.pptx_files: List[str] = []
+        self.excel_files: List[str] = []
+        self.memory: Dict[str, Any] = {}
+        
+        # Return initial messages
         return self.messages
 
     @workflow.query
@@ -146,7 +147,7 @@ class PPTAgentWorkflow:
         return self.messages
 
     @workflow.signal
-    async def user_input(self, data: UserInput):
+    async def user_input(self, data: UserInput) -> None:
         """Signal method to receive user input."""
         self.pptx_files = data.pptx_files
         self.excel_files = data.excel_files
@@ -158,7 +159,6 @@ class PPTAgentWorkflow:
         })
         
         # Process the query and generate response
-        # Add assistant response to messages
         response = await workflow.execute_activity(
             "call_llm",
             args=[{
@@ -170,20 +170,3 @@ class PPTAgentWorkflow:
         )
         
         self.messages.append(response)
-
-    @workflow.signal
-    async def user_input(self, input_data: Dict[str, Any]):
-        """Signal handler for user input."""
-        self.user_query = input_data.get("query", "")
-        self.pptx_files = input_data.get("pptx_files", [])
-        self.excel_files = input_data.get("excel_files", [])
-        self.file_path_mapping = {
-            os.path.basename(f): f 
-            for f in self.pptx_files + self.excel_files
-        }
-        self.user_input_received = True
-
-    @workflow.query
-    def get_conversation_history(self) -> List[Dict[str, Any]]:
-        """Query method to get the current conversation history."""
-        return self.messages
